@@ -1,8 +1,14 @@
 import requests
 import json
 import re
+import os
+import time
+import tempfile
 from urllib.parse import quote
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
+import yt_dlp
+import asyncio
+from deepgram import Deepgram
 
 def extract_shortcode_from_url(url):
     url = url.split('?')[0]
@@ -202,6 +208,198 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "service": "Instagram Reel Scraper API"})
 
+
+###############################
+# YouTube extraction endpoints #
+###############################
+
+def _normalize_youtube_url(video_url: str) -> str:
+    """Minimal helper to normalize Shorts URLs to watch URLs."""
+    try:
+        m = re.search(r"youtube\.com/shorts/([A-Za-z0-9_-]+)", video_url)
+        if m:
+            video_id = m.group(1)
+            return f"https://www.youtube.com/watch?v={video_id}"
+    except Exception:
+        return video_url
+    return video_url
+
+
+def _extract_youtube_metadata(url: str) -> dict:
+    url = _normalize_youtube_url(url)
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "extract_flat": False,
+        "socket_timeout": 30,
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        duration = info.get("duration")
+        title = info.get("title", "Unknown Title")
+        thumbnail = info.get("thumbnail")
+        video_id = info.get("id")
+
+        return {
+            "success": True,
+            "videoId": video_id,
+            "title": title,
+            "duration": duration,
+            "thumbnailUrl": thumbnail,
+        }
+    except yt_dlp.DownloadError as e:
+        return {"success": False, "error": f"YouTube download error: {str(e)}", "error_code": "VIDEO_UNAVAILABLE"}
+    except yt_dlp.ExtractorError as e:
+        return {"success": False, "error": f"YouTube extractor error: {str(e)}", "error_code": "INVALID_URL"}
+    except Exception as e:
+        return {"success": False, "error": f"Unexpected error: {str(e)}", "error_code": "UNEXPECTED_ERROR"}
+
+
+def _download_youtube_audio(url: str) -> str:
+    """Download audio as mp3 and return a path to the temp file."""
+    url = _normalize_youtube_url(url)
+    tmpdir = tempfile.mkdtemp(prefix="youtube_audio_")
+    outtmpl = os.path.join(tmpdir, "audio.%(ext)s")
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": outtmpl,
+        "postprocessors": [
+            {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
+        ],
+        "quiet": True,
+        "socket_timeout": 60,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+
+    # Find resulting mp3
+    for fname in os.listdir(tmpdir):
+        if fname.endswith(".mp3"):
+            return os.path.join(tmpdir, fname)
+    raise RuntimeError("MP3 file not produced")
+
+
+# ---------------- Deepgram transcription helpers ----------------
+def _load_deepgram_api_keys() -> list[str]:
+    keys: list[str] = []
+    first = os.getenv("DEEPGRAM_API_KEY")
+    if first:
+        keys.append(first)
+    for i in range(1, 10):
+        v = os.getenv(f"DEEPGRAM_API_KEY_{i}")
+        if v:
+            keys.append(v)
+    multi = os.getenv("DEEPGRAM_API_KEYS")
+    if multi:
+        import re as _re
+        keys.extend([k.strip() for k in _re.split(r"[;,]", multi) if k.strip()])
+    # dedup preserve order
+    seen = set()
+    dedup: list[str] = []
+    for k in keys:
+        if k and k not in seen:
+            dedup.append(k)
+            seen.add(k)
+    return dedup
+
+
+async def _dg_transcribe_file(audio_path: str, api_key: str) -> dict | None:
+    try:
+        dg = Deepgram(api_key)
+        mimetype = "audio/mp3" if audio_path.endswith(".mp3") else "audio/wav" if audio_path.endswith(".wav") else "audio/mp3"
+        with open(audio_path, "rb") as f:
+            source = {"buffer": f, "mimetype": mimetype}
+            resp = await dg.transcription.prerecorded(source, {"punctuate": True})
+            return resp
+    except Exception as e:
+        print(f"Deepgram error: {e}")
+        return None
+
+
+def transcribe_audio_file(audio_path: str) -> str | None:
+    keys = _load_deepgram_api_keys()
+    if not keys:
+        print("No Deepgram API keys configured")
+        return None
+    # try keys in order
+    for idx, key in enumerate(keys):
+        try:
+            result = asyncio.run(_dg_transcribe_file(audio_path, key))
+            if not result:
+                continue
+            # extract transcript text
+            try:
+                channels = result.get("results", {}).get("channels", [])
+                if channels:
+                    alts = channels[0].get("alternatives", [])
+                    if alts and alts[0].get("transcript"):
+                        txt = (alts[0].get("transcript") or "").strip()
+                        if txt:
+                            return txt
+            except Exception:
+                continue
+        except Exception as e:
+            print(f"Deepgram exception for key[{idx}]: {e}")
+            continue
+    return None
+
+
+@app.route('/api/youtube/extract', methods=['POST'])
+def youtube_extract():
+    try:
+        data = request.get_json(silent=True) or {}
+        url = data.get('url')
+        if not url:
+            return jsonify({"error": "Missing 'url' in request body"}), 400
+        result = _extract_youtube_metadata(url)
+        status = 200 if result.get("success") else 400
+        return jsonify(result), status
+    except Exception as e:
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
+@app.route('/api/youtube/download-audio', methods=['POST'])
+def youtube_download_audio():
+    try:
+        data = request.get_json(silent=True) or {}
+        url = data.get('url')
+        if not url:
+            return jsonify({"error": "Missing 'url' in request body"}), 400
+
+        mp3_path = _download_youtube_audio(url)
+        # For compatibility, still support direct audio download
+        return send_file(mp3_path, mimetype='audio/mpeg', as_attachment=True,
+                         download_name=f"youtube_audio_{int(time.time())}.mp3")
+    except yt_dlp.DownloadError as e:
+        return jsonify({"error": f"YouTube download error: {str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
+@app.route('/api/youtube/transcribe', methods=['POST'])
+def youtube_transcribe():
+    """Download audio and return transcript text using Deepgram keys from env."""
+    try:
+        data = request.get_json(silent=True) or {}
+        url = data.get('url')
+        if not url:
+            return jsonify({"error": "Missing 'url' in request body"}), 400
+
+        mp3_path = _download_youtube_audio(url)
+        transcript = transcribe_audio_file(mp3_path)
+        try:
+            if mp3_path and os.path.exists(mp3_path):
+                os.remove(mp3_path)
+        except Exception:
+            pass
+
+        if not transcript:
+            return jsonify({"success": False, "error": "Transcription failed"}), 500
+        return jsonify({"success": True, "transcript": transcript})
+    except Exception as e:
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 if __name__ == "__main__":
     # Run the Flask app
