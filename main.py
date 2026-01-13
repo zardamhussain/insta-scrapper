@@ -232,6 +232,7 @@ def _extract_youtube_metadata(url: str) -> dict:
         "skip_download": True,
         "extract_flat": False,
         "socket_timeout": 30,
+        "cookies": "www.youtube.com_cookies.txt"
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -270,6 +271,7 @@ def _download_youtube_audio(url: str) -> str:
         ],
         "quiet": True,
         "socket_timeout": 60,
+        "cookies": "www.youtube.com_cookies.txt"
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
