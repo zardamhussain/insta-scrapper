@@ -3,7 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg curl \
+    && apt-get install -y --no-install-recommends ffmpeg curl nodejs npm \
     && rm -rf /var/lib/apt/lists/*
     
 RUN pip install --no-cache-dir flask requests yt-dlp deepgram-sdk==2.12.0

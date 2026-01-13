@@ -180,6 +180,23 @@ def scrape_instagram_reel(url):
 # Flask API
 app = Flask(__name__)
 
+# Startup configuration check
+def _check_startup_config():
+    keys = _load_deepgram_api_keys()
+    if keys:
+        print(f"✓ Deepgram API: {len(keys)} key(s) configured")
+    else:
+        print("⚠ Deepgram API: No keys configured (transcription will be unavailable)")
+        print("  Add DEEPGRAM_API_KEY to your .env file to enable transcription")
+
+# Run startup check after app initialization
+import atexit
+@app.before_request
+def _run_once():
+    if not hasattr(app, '_startup_check_done'):
+        _check_startup_config()
+        app._startup_check_done = True
+
 @app.route('/api/reel', methods=['POST'])
 def get_reel_info():
     """POST API endpoint to extract reel information"""
@@ -229,9 +246,11 @@ def _extract_youtube_metadata(url: str) -> dict:
     url = _normalize_youtube_url(url)
     ydl_opts = {
         "quiet": True,
+        "no_warnings": True,
         "skip_download": True,
         "extract_flat": False,
         "socket_timeout": 30,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -269,7 +288,9 @@ def _download_youtube_audio(url: str) -> str:
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}
         ],
         "quiet": True,
+        "no_warnings": True,
         "socket_timeout": 60,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -321,7 +342,6 @@ async def _dg_transcribe_file(audio_path: str, api_key: str) -> dict | None:
 def transcribe_audio_file(audio_path: str) -> str | None:
     keys = _load_deepgram_api_keys()
     if not keys:
-        print("No Deepgram API keys configured")
         return None
     # try keys in order
     for idx, key in enumerate(keys):

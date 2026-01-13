@@ -1,25 +1,10 @@
 version: '3.8'
 
 services:
-  traefik:
-    image: traefik:v2.10
-    command:
-      - "--log.level=DEBUG"
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entrypoints.web.address=:80"
-    ports:
-      - "69:80"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
 
   app:
+    ports:
+      - "69:3400"
     build: .
     environment:
     - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
-
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.app.rule=Host(`localhost`)"
-      - "traefik.http.routers.app.entrypoints=web"
-      - "traefik.http.services.app.loadbalancer.server.port=3400"
