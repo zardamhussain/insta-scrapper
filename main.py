@@ -12,7 +12,7 @@ from deepgram import Deepgram
 
 def extract_shortcode_from_url(url):
     url = url.split('?')[0]
-    pattern = r'instagram\.com/(?:[^/]+/)?(?:reel|p)/([^/?]+)'
+    pattern = r'instagram\.com/(?:[^/]+/)?(?:reels?|p)/([^/?]+)'
     match = re.search(pattern, url)
     
     if not match:
