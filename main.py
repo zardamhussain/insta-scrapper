@@ -4,11 +4,15 @@ import re
 import os
 import time
 import tempfile
+import logging
 from urllib.parse import quote
 from flask import Flask, request, jsonify, send_file
 import yt_dlp
 import asyncio
 from deepgram import Deepgram
+import bugsnag
+from bugsnag.flask import handle_exceptions
+from bugsnag.handlers import BugsnagHandler
 
 def extract_shortcode_from_url(url):
     url = url.split('?')[0]
@@ -180,6 +184,39 @@ def scrape_instagram_reel(url):
 # Flask API
 app = Flask(__name__)
 
+# ---------------- Logging & Bugsnag configuration ----------------
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+BUGSNAG_API_KEY = os.getenv("BUGSNAG_API_KEY")
+if BUGSNAG_API_KEY:
+    bugsnag.configure(
+        api_key=BUGSNAG_API_KEY,
+        project_root="insta-scrapper",
+    )
+    bugsnag_logger = logging.getLogger("test.logger")
+    handler = BugsnagHandler()
+    handler.setLevel(logging.ERROR)
+    bugsnag_logger.addHandler(handler)
+    handle_exceptions(app)
+    logger.info("Bugsnag initialized and Flask exception handler attached.")
+else:
+    logger.warning("BUGSNAG_API_KEY not set; Bugsnag integration disabled.")
+
+
+def notify_bugsnag(exc: Exception, video_url: str | None = None):
+    """Send exception details to Bugsnag, including the video URL if available."""
+    if not BUGSNAG_API_KEY:
+        return
+    try:
+        meta_data = {}
+        if video_url:
+            meta_data["video"] = {"url": video_url}
+        bugsnag.notify(exc, meta_data=meta_data if meta_data else None)
+    except Exception:
+        # Never let Bugsnag failures break the API
+        pass
+
 @app.route('/api/reel', methods=['POST'])
 def get_reel_info():
     """POST API endpoint to extract reel information"""
@@ -200,8 +237,19 @@ def get_reel_info():
         return jsonify(result)
     
     except Exception as e:
+        url = None
+        try:
+            body = request.get_json(silent=True) or {}
+            url = body.get('url')
+        except Exception:
+            pass
+        notify_bugsnag(e, video_url=url)
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
+
+@app.route('/api/bugsnag-test', methods=['GET'])
+def bugsnag_test():
+    raise RuntimeError("Bugsnag test exception")
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -359,6 +407,7 @@ def youtube_extract():
         status = 200 if result.get("success") else 400
         return jsonify(result), status
     except Exception as e:
+        notify_bugsnag(e, video_url=(data.get('url') if isinstance(data, dict) else None))
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 
@@ -375,8 +424,10 @@ def youtube_download_audio():
         return send_file(mp3_path, mimetype='audio/mpeg', as_attachment=True,
                          download_name=f"youtube_audio_{int(time.time())}.mp3")
     except yt_dlp.DownloadError as e:
+        notify_bugsnag(e, video_url=(data.get('url') if isinstance(data, dict) else None))
         return jsonify({"error": f"YouTube download error: {str(e)}"}), 400
     except Exception as e:
+        notify_bugsnag(e, video_url=(data.get('url') if isinstance(data, dict) else None))
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 
@@ -401,6 +452,7 @@ def youtube_transcribe():
             return jsonify({"success": False, "error": "Transcription failed"}), 500
         return jsonify({"success": True, "transcript": transcript})
     except Exception as e:
+        notify_bugsnag(e, video_url=(data.get('url') if isinstance(data, dict) else None))
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ services:
     build: .
     environment:
     - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+    - BUGSNAG_API_KEY=${BUGSNAG_API_KEY}
 
     labels:
       - "traefik.enable=true"
