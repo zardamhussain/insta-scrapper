@@ -8,7 +8,35 @@ from urllib.parse import quote
 from flask import Flask, request, jsonify, send_file
 import yt_dlp
 import asyncio
+from dotenv import load_dotenv
+import bugsnag
+from bugsnag.flask import handle_exceptions
 from deepgram import Deepgram
+
+
+load_dotenv()
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+bugsnag.configure(
+    api_key=os.getenv("BUGSNAG_API_KEY"),
+    project_root=PROJECT_ROOT,
+)
+
+
+def _notify_bugsnag(exc, endpoint: str, target_url: str | None = None) -> None:
+    """Report exceptions with endpoint + target URL metadata."""
+    metadata = {"request": {"endpoint": endpoint}}
+    if target_url:
+        metadata["request"]["target_url"] = target_url
+    else:
+        try:
+            payload = request.get_json(silent=True) or {}
+            fallback_url = payload.get("url")
+            if fallback_url:
+                metadata["request"]["target_url"] = fallback_url
+        except Exception:
+            pass
+    bugsnag.notify(exc, meta_data=metadata)
 
 def extract_shortcode_from_url(url):
     url = url.split('?')[0]
@@ -179,6 +207,7 @@ def scrape_instagram_reel(url):
 
 # Flask API
 app = Flask(__name__)
+handle_exceptions(app)
 
 # Startup configuration check
 def _check_startup_config():
@@ -200,6 +229,7 @@ def _run_once():
 @app.route('/api/reel', methods=['POST'])
 def get_reel_info():
     """POST API endpoint to extract reel information"""
+    url = None
     try:
         data = request.get_json()
         
@@ -217,6 +247,7 @@ def get_reel_info():
         return jsonify(result)
     
     except Exception as e:
+        _notify_bugsnag(e, endpoint="/api/reel", target_url=url)
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 
@@ -368,6 +399,7 @@ def transcribe_audio_file(audio_path: str) -> str | None:
 
 @app.route('/api/youtube/extract', methods=['POST'])
 def youtube_extract():
+    url = None
     try:
         data = request.get_json(silent=True) or {}
         url = data.get('url')
@@ -377,11 +409,13 @@ def youtube_extract():
         status = 200 if result.get("success") else 400
         return jsonify(result), status
     except Exception as e:
+        _notify_bugsnag(e, endpoint="/api/youtube/extract", target_url=url)
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 
 @app.route('/api/youtube/download-audio', methods=['POST'])
 def youtube_download_audio():
+    url = None
     try:
         data = request.get_json(silent=True) or {}
         url = data.get('url')
@@ -395,12 +429,14 @@ def youtube_download_audio():
     except yt_dlp.DownloadError as e:
         return jsonify({"error": f"YouTube download error: {str(e)}"}), 400
     except Exception as e:
+        _notify_bugsnag(e, endpoint="/api/youtube/download-audio", target_url=url)
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 
 @app.route('/api/youtube/transcribe', methods=['POST'])
 def youtube_transcribe():
     """Download audio and return transcript text using Deepgram keys from env."""
+    url = None
     try:
         data = request.get_json(silent=True) or {}
         url = data.get('url')
@@ -419,6 +455,7 @@ def youtube_transcribe():
             return jsonify({"success": False, "error": "Transcription failed"}), 500
         return jsonify({"success": True, "transcript": transcript})
     except Exception as e:
+        _notify_bugsnag(e, endpoint="/api/youtube/transcribe", target_url=url)
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 if __name__ == "__main__":

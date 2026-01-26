@@ -6,7 +6,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg curl nodejs npm \
     && rm -rf /var/lib/apt/lists/*
     
-RUN pip install --no-cache-dir flask requests yt-dlp deepgram-sdk==2.12.0
+RUN pip install --no-cache-dir flask requests yt-dlp deepgram-sdk==2.12.0 bugsnag python-dotenv
 
 COPY main.py .
 
