@@ -15,11 +15,9 @@ from deepgram import Deepgram
 
 
 load_dotenv()
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 bugsnag.configure(
     api_key=os.getenv("BUGSNAG_API_KEY"),
-    project_root=PROJECT_ROOT,
 )
 
 
