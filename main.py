@@ -8,13 +8,11 @@ from urllib.parse import quote
 from flask import Flask, request, jsonify, send_file
 import yt_dlp
 import asyncio
-from dotenv import load_dotenv
 import bugsnag
 from bugsnag.flask import handle_exceptions
 from deepgram import Deepgram
 
 
-load_dotenv()
 
 bugsnag.configure(
     api_key=os.getenv("BUGSNAG_API_KEY"),
