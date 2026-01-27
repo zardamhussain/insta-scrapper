@@ -246,7 +246,17 @@ def get_reel_info():
         data = request.get_json()
         
         if not data or 'url' not in data:
-            return jsonify({"error": "Missing 'url' in request body"}), 400
+            error_msg = "Missing 'url' in request body"
+            combined_error = RuntimeError(
+                f"{error_msg} | url={None!r} | payload={data!r}"
+            )
+            _notify_bugsnag(
+                combined_error,
+                endpoint="/api/reel",
+                target_url=None,
+                extra_metadata={"payload": data},
+            )
+            return jsonify({"error": error_msg}), 400
         
         url = data['url']
         print("urlss", url)
@@ -260,6 +270,19 @@ def get_reel_info():
             )
         
         if 'error' in result:
+            err_text = result.get('error')
+            combined_error = RuntimeError(
+                f"{err_text} | url={url!r} | scrape_result={result!r}"
+            )
+            _notify_bugsnag(
+                combined_error,
+                endpoint="/api/reel",
+                target_url=url,
+                extra_metadata={
+                    "payload": data,
+                    "scrape_result": result,
+                },
+            )
             return jsonify(result), 400
         
         return jsonify(result)
