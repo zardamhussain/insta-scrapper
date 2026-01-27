@@ -19,9 +19,18 @@ bugsnag.configure(
 )
 
 
-def _notify_bugsnag(exc, endpoint: str, target_url: str | None = None) -> None:
-    """Report exceptions with endpoint + target URL metadata."""
-    metadata = {"request": {"endpoint": endpoint}}
+def _notify_bugsnag(
+    exc,
+    endpoint: str,
+    target_url: str | None = None,
+    extra_metadata: dict | None = None,
+) -> None:
+    """Report exceptions with endpoint + target URL metadata.
+
+    extra_metadata (if provided) is merged under the top-level of meta_data,
+    allowing callers to attach full request bodies, results, etc.
+    """
+    metadata: dict = {"request": {"endpoint": endpoint}}
     if target_url:
         metadata["request"]["target_url"] = target_url
     else:
@@ -32,6 +41,12 @@ def _notify_bugsnag(exc, endpoint: str, target_url: str | None = None) -> None:
                 metadata["request"]["target_url"] = fallback_url
         except Exception:
             pass
+
+    if extra_metadata:
+        # Shallow merge: explicit extra_metadata keys win if they collide
+        for key, value in extra_metadata.items():
+            metadata[key] = value
+
     bugsnag.notify(exc, meta_data=metadata)
 
 def extract_shortcode_from_url(url):
@@ -226,24 +241,73 @@ def _run_once():
 def get_reel_info():
     """POST API endpoint to extract reel information"""
     url = None
+    result = None
     try:
         data = request.get_json()
         
         if not data or 'url' not in data:
-            return jsonify({"error": "Missing 'url' in request body"}), 400
+            error_msg = "Missing 'url' in request body"
+            combined_error = RuntimeError(
+                f"{error_msg} | url={None!r} | payload={data!r}"
+            )
+            _notify_bugsnag(
+                combined_error,
+                endpoint="/api/reel",
+                target_url=None,
+                extra_metadata={"payload": data},
+            )
+            return jsonify({"error": error_msg}), 400
         
         url = data['url']
         print("urlss", url)
         
         result = scrape_instagram_reel(url)
+
+        # Ensure we handle unexpected/None results gracefully and capture them
+        if not isinstance(result, dict):
+            raise ValueError(
+                f"Unexpected scrape_instagram_reel result type: {type(result).__name__}"
+            )
         
         if 'error' in result:
+            err_text = result.get('error')
+            combined_error = RuntimeError(
+                f"{err_text} | url={url!r} | scrape_result={result!r}"
+            )
+            _notify_bugsnag(
+                combined_error,
+                endpoint="/api/reel",
+                target_url=url,
+                extra_metadata={
+                    "payload": data,
+                    "scrape_result": result,
+                },
+            )
             return jsonify(result), 400
         
         return jsonify(result)
     
     except Exception as e:
-        _notify_bugsnag(e, endpoint="/api/reel", target_url=url)
+        # Capture full request body and scrape result in Bugsnag for this endpoint
+        try:
+            request_body = request.get_json(silent=True) or {}
+        except Exception:
+            request_body = None
+
+        # Build a single, searchable error message that includes the URL and result
+        combined_error = RuntimeError(
+            f"{e} | url={url!r} | scrape_result={result!r}"
+        )
+
+        _notify_bugsnag(
+            combined_error,
+            endpoint="/api/reel",
+            target_url=url,
+            extra_metadata={
+                "payload": request_body,
+                "scrape_result": result,
+            },
+        )
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 
@@ -433,6 +497,7 @@ def youtube_download_audio():
 def youtube_transcribe():
     """Download audio and return transcript text using Deepgram keys from env."""
     url = None
+    transcript = None
     try:
         data = request.get_json(silent=True) or {}
         url = data.get('url')
@@ -451,7 +516,24 @@ def youtube_transcribe():
             return jsonify({"success": False, "error": "Transcription failed"}), 500
         return jsonify({"success": True, "transcript": transcript})
     except Exception as e:
-        _notify_bugsnag(e, endpoint="/api/youtube/transcribe", target_url=url)
+        try:
+            request_body = request.get_json(silent=True) or {}
+        except Exception:
+            request_body = None
+
+        combined_error = RuntimeError(
+            f"{e} | url={url!r} | transcript={transcript!r}"
+        )
+
+        _notify_bugsnag(
+            combined_error,
+            endpoint="/api/youtube/transcribe",
+            target_url=url,
+            extra_metadata={
+                "payload": request_body,
+                "transcript": transcript,
+            },
+        )
         return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
 if __name__ == "__main__":
