@@ -14,7 +14,6 @@ from bugsnag.flask import handle_exceptions
 from deepgram import Deepgram
 
 
-load_dotenv()
 
 bugsnag.configure(
     api_key=os.getenv("BUGSNAG_API_KEY"),
